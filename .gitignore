@@ -7,3 +7,7 @@ public/models/
 
 .DS_Store
 *.local
+
+# Local agent notes, kept out of the repo
+CLAUDE.md
+.claude/
