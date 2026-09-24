@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>rHUD</title>
+    <style>
+      :root {
+        --base: #03070a;
+        --primary: #5fe9ff;
+        --deep: #0a2a3a;
+        --accent: #ffb23f;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: var(--base); }
+      body { cursor: none; }
+      body.show-cursor { cursor: default; }
+      #stage { display: block; width: 100vw; height: 100vh; }
+
+      /* Boot / error curtain */
+      #boot {
+        position: fixed; inset: 0; z-index: 100;
+        display: grid; place-content: center; gap: 1rem;
+        background: var(--base); color: var(--primary);
+        font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+        transition: opacity 500ms ease;
+      }
+      #boot.hidden { opacity: 0; pointer-events: none; }
+      #boot .err { color: var(--accent); text-transform: none; letter-spacing: 0.04em; max-width: 60ch; line-height: 1.6; }
+      #boot select, #boot button {
+        background: transparent; color: var(--primary);
+        border: 1px solid var(--deep); padding: 0.6rem 0.9rem;
+        font: inherit; letter-spacing: 0.1em; cursor: pointer;
+      }
+      #boot button:hover { border-color: var(--primary); }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <div id="boot"><div>rHUD — initializing</div></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

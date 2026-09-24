@@ -1,0 +1,9 @@
+node_modules/
+dist/
+
+# Vendored at install time by scripts/fetch-assets.mjs
+public/wasm/
+public/models/
+
+.DS_Store
+*.local
