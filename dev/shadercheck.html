@@ -13,7 +13,7 @@
       import { AmbientHUD } from '/src/render/AmbientHUD.ts';
       import { DepthFX } from '/src/render/DepthFX.ts';
       import { Viewport } from '/src/core/viewport.ts';
-      import { DataArrayTexture } from 'three';
+      import { AdditiveBlending, DataArrayTexture } from 'three';
 
       const out = document.getElementById('out');
       const log = (m) => { out.textContent += m + '\n'; console.log('[check]', m); };
@@ -133,6 +133,35 @@
         xrReticle.update({ ...hand, palmCenter: { x: 250, y: 200, z: 0 }, spanRadius: 45 }, 1.25, true);
         stage.scene.add(xrReticle.mesh);
 
+        reticle.update(hand, 1.25, false);
+        skeleton.update([hand]);
+        feed.update(1.25);
+        ambient.update(1.25, 2, true);
+        stage.renderer.render(stage.scene, stage.camera);
+        const drawCalls = stage.renderer.info.render.calls;
+        readback();
+
+        // A bright pixel somewhere is not enough: a blown-out white frame has
+        // plenty. The full scene has to keep its structure, meaning a dark
+        // backdrop, a lit reticle, and very little clipped to white.
+        const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+        let n = 0, clipped = 0, dark = 0;
+        for (let y = 0; y < H; y += 8) {
+          for (let x = 0; x < W; x += 8) {
+            const l = lumaAt(x, y);
+            n++;
+            if (l > 235) clipped++;
+            if (l < 64) dark++;
+          }
+        }
+        const clippedFrac = clipped / n, darkFrac = dark / n;
+        const fullRing = lumaAt(cx + (meshScale * 0.95) / 1.6, cy);
+        const fullMap = asciiMap(19, 39);
+
+        // ---- pass 3: depth fx alone ------------------------------------------
+        // XR only, where it sits over passthrough with no feed and no bloom.
+        // Drawn into the flat scene it covers the whole viewport and bloom
+        // turns it into a white frame, so it gets its own pass.
         // DepthFX samples a sampler2DArray fed by the XR runtime. There is no
         // session here, so stand in a 2-layer array texture — enough to prove
         // the shader compiles and samples, which is the part that breaks.
@@ -151,33 +180,53 @@
         du.uNear.value = 0.1;
         du.uFar.value = 100;
         du.uTime.value = 1.25;
-        depthfx.mesh.visible = true;
+        // config.depthfx.debug may be left on while the headset's depth
+        // encoding is worked out. That mode paints the raw texture as an
+        // opaque full-screen quad, so check the shipping path instead.
+        du.uDebug.value = 0;
+        depthfx.mesh.material.blending = AdditiveBlending;
+
+        feed.mesh.visible = false;
+        ambient.root.visible = false;
+        skeleton.setVisible(false);
+        reticle.mesh.visible = false;
+        xrReticle.mesh.visible = false;
         stage.scene.add(depthfx.mesh);
-        log('depth fx: built (sampler2DArray path)');
-
-        reticle.update(hand, 1.25, false);
-        skeleton.update([hand]);
-        feed.update(1.25);
-        ambient.update(1.25, 2, true);
+        depthfx.mesh.visible = true;
+        // No composer: XR bypasses bloom, so this matches what the headset draws.
         stage.renderer.render(stage.scene, stage.camera);
-        const drawCalls = stage.renderer.info.render.calls;
-        readback();
-
-        let maxL = 0;
-        for (let i = 0; i < 1280 * 720; i++) {
-          const l = (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2]) / 3;
-          if (l > maxL) maxL = l;
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        let dLit = 0, dClipped = 0, dN = 0;
+        for (let y = 0; y < H; y += 8) {
+          for (let x = 0; x < W; x += 8) {
+            const l = lumaAt(x, y);
+            dN++;
+            if (l > 120) dLit++;
+            if (l > 235) dClipped++;
+          }
         }
+        // The stand-in has hard steps between its 4x4 texels, so the edge
+        // detector should light a few lines and leave the rest dim.
+        const depthOk = dLit > 0 && dClipped / dN < 0.1 && dLit / dN < 0.5;
+        log('depth fx: lit ' + (dLit / dN * 100).toFixed(1) + '%, clipped ' +
+            (dClipped / dN * 100).toFixed(1) + '%   (sampler2DArray path)');
+        log('--- depth fx only ---\n' + asciiMap(19, 39));
 
-        log('--- full scene ---\n' + asciiMap(19, 39));
+        log('--- full scene ---\n' + fullMap);
         log('webgl: ' + gl.getParameter(gl.VERSION));
         log('programs: ' + stage.renderer.info.programs.length +
             '   draw calls: ' + drawCalls + '   gl error: ' + gl.getError());
 
-        const drew = maxL > 60;
+        log('  clipped to white: ' + (clippedFrac * 100).toFixed(1) + '%   (should be < 10%)');
+        log('  dark backdrop   : ' + (darkFrac * 100).toFixed(1) + '%   (should be > 35%)');
+        log('  reticle ring    : ' + fullRing.toFixed(0) + '   (should be > 60)');
+        const drew = fullRing > 60;
+        const structured = clippedFrac < 0.1 && darkFrac > 0.35;
         log(errors.length ? 'CONSOLE ERRORS:\n' + errors.join('\n') : 'no shader errors');
         if (!drew) log('NOTHING RASTERIZED');
-        log((!errors.length && drew && circular) ? 'RESULT: PASS' : 'RESULT: FAIL');
+        if (!structured) log('FULL SCENE BLOWN OUT OR FLAT');
+        if (!depthOk) log('DEPTH FX DID NOT RENDER AN EDGE PATTERN');
+        log((!errors.length && drew && structured && circular && depthOk) ? 'RESULT: PASS' : 'RESULT: FAIL');
       } catch (e) {
         log('THREW: ' + (e && e.stack || e));
         log('RESULT: FAIL');
