@@ -11,8 +11,11 @@ npm install          # also fetches MediaPipe wasm + model into public/
 npm run dev          # http://localhost:5173
 npm run dev:lan      # https on the LAN, for headset testing
 npm run build        # typecheck + production build
+npm run shadercheck  # headless shader smoke test (needs `npm run dev` running)
 ```
 
 Keys: `S` skeleton, `H` debug panel, `F` blank feed, `R` re-pick camera.
 
 Status: phases 0-5 and 7 built; not yet validated against a real camera. See `ROADMAP.md`.
+
+MIT licensed.
