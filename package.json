@@ -4,6 +4,7 @@
   "description": "Iron Man-style hand-tracked HUD. POV camera in, sci-fi reticles out.",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "dev:lan": "RHUD_LAN=1 vite",
