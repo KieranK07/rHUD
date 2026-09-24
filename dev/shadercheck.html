@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>rHUD shader check</title></head>
+  <body style="margin:0;background:#03070a">
+    <canvas id="stage" style="width:100vw;height:100vh;display:block"></canvas>
+    <div id="boot" style="display:none"></div>
+    <pre id="out" style="position:fixed;top:10px;left:10px;color:#5fe9ff;font:12px monospace;z-index:9"></pre>
+    <script type="module">
+      import { Stage } from '/src/render/Stage.ts';
+      import { Reticle } from '/src/render/Reticle.ts';
+      import { Feed } from '/src/render/Feed.ts';
+      import { Skeleton } from '/src/render/Skeleton.ts';
+      import { AmbientHUD } from '/src/render/AmbientHUD.ts';
+      import { DepthFX } from '/src/render/DepthFX.ts';
+      import { Viewport } from '/src/core/viewport.ts';
+      import { DataArrayTexture } from 'three';
+
+      const out = document.getElementById('out');
+      const log = (m) => { out.textContent += m + '\n'; console.log('[check]', m); };
+      const errors = [];
+      const origError = console.error;
+      console.error = (...a) => { errors.push(a.join(' ')); origError(...a); };
+
+      try {
+        const canvas = document.getElementById('stage');
+        const stage = new Stage(canvas);
+        const viewport = new Viewport();
+        viewport.resize(1280, 720, 1280, 720);
+        stage.resize(1280, 720);
+        const gl = stage.renderer.getContext();
+
+        // Stand-in for the camera: Feed only reads videoWidth/Height and hands
+        // the element to VideoTexture.
+        const fake = document.createElement('video');
+        Object.defineProperty(fake, 'videoWidth', { value: 1280 });
+        Object.defineProperty(fake, 'videoHeight', { value: 720 });
+
+        const feed = new Feed(fake);
+        feed.layout(viewport);
+        const skeleton = new Skeleton();
+        skeleton.setVisible(true);
+        const reticle = new Reticle();
+        const ambient = new AmbientHUD(true);
+        ambient.layoutFlat(viewport);
+
+        stage.scene.add(feed.mesh, skeleton.lines, skeleton.points, reticle.mesh, ambient.root);
+
+        // Synthetic hand. Palm basis is orthonormal, matching what
+        // HandState.computePalmBasis emits. spanRadius is small enough that the
+        // whole reticle quad — corners included — lands inside the framebuffer.
+        const hand = {
+          chirality: 'right', present: true, confidence: 1,
+          joints: Array.from({ length: 21 }, (_, i) => ({ x: 640 + i * 4, y: 360 + i * 3, z: 0 })),
+          palmCenter: { x: 640, y: 360, z: 0 },
+          palmNormal: { x: 0, y: 0, z: 1 },
+          palmRight: { x: 1, y: 0, z: 0 },
+          palmUp: { x: 0, y: 1, z: 0 },
+          spanRadius: 80, pinch: 0.6,
+          curl: [0.2, 0.4, 0.6, 0.3, 0.1], speed: 0, acquire: 1,
+        };
+
+        const px = new Uint8Array(1280 * 720 * 4);
+        const readback = () => {
+          stage.render();
+          gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight,
+                        gl.RGBA, gl.UNSIGNED_BYTE, px);
+        };
+        const lumaAt = (x, y) => {
+          const i = (Math.round(y) * gl.drawingBufferWidth + Math.round(x)) * 4;
+          return (px[i] + px[i + 1] + px[i + 2]) / 3;
+        };
+        const asciiMap = (rows, cols) => {
+          const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, ramp = ' .:-=+*#%@';
+          let m = '';
+          for (let ry = 0; ry < rows; ry++) {
+            for (let rx = 0; rx < cols; rx++) {
+              const l = lumaAt((rx + 0.5) / cols * W, (1 - (ry + 0.5) / rows) * H);
+              m += ramp[Math.min(9, Math.floor(l / 26))];
+            }
+            m += '\n';
+          }
+          return m;
+        };
+
+        // ---- pass 1: reticle alone, to check it reads as a circle ----------
+        // The reported bug was a visible square: the glow halo and the
+        // acquisition brackets spilled past the quad and were clipped flat by
+        // its edges. If that regresses, the quad corners light up again.
+        feed.mesh.visible = false;
+        ambient.root.visible = false;
+        skeleton.setVisible(false);
+        reticle.update(hand, 1.25, false);
+        readback();
+
+        const meshScale = reticle.mesh.scale.x;
+        const cx = 640, cy = 360;
+
+        // Squareness is an *angular* property, not a brightness one — bloom
+        // legitimately bleeds a soft isotropic halo well past the rings, so a
+        // plain darkness threshold would fail on a perfectly round reticle.
+        //
+        // What a clipped quad actually looks like: past the quad's edge
+        // midpoint there is still geometry in the diagonal directions (the
+        // corners reach 1.41x further), so light survives on the diagonals and
+        // vanishes on the axes. Sampling one radius that sits beyond the edge
+        // but inside the corners makes that asymmetry unmistakable.
+        const R = meshScale * 1.12;
+        const at = (deg) => lumaAt(
+          cx + R * Math.cos((deg * Math.PI) / 180),
+          cy + R * Math.sin((deg * Math.PI) / 180),
+        );
+        const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+        const diag = mean([45, 135, 225, 315].map(at));
+        const axis = mean([0, 90, 180, 270].map(at));
+        const ratio = axis < 1 ? (diag < 1 ? 1 : 99) : diag / axis;
+        const ringLuma = lumaAt(cx + (meshScale * 0.95) / 1.6, cy); // outer ring radius
+
+        log('reticle quad scale: ' + meshScale.toFixed(0) + 'px');
+        log('  outer ring luma : ' + ringLuma.toFixed(0) + '   (should be bright)');
+        log('  beyond-edge diag: ' + diag.toFixed(1));
+        log('  beyond-edge axis: ' + axis.toFixed(1));
+        log('  diag/axis ratio : ' + ratio.toFixed(2) + '   (1 = round, >2 = square)');
+        const circular = ratio < 1.8 && ringLuma > 40;
+        log('  verdict: ' + (circular ? 'CIRCULAR' : 'SQUARE EDGES DETECTED'));
+        log('--- reticle only ---\n' + asciiMap(19, 39));
+
+        // ---- pass 2: full scene --------------------------------------------
+        feed.mesh.visible = true;
+        ambient.root.visible = true;
+        skeleton.setVisible(true);
+
+        const xrReticle = new Reticle(false);
+        xrReticle.update({ ...hand, palmCenter: { x: 250, y: 200, z: 0 }, spanRadius: 45 }, 1.25, true);
+        stage.scene.add(xrReticle.mesh);
+
+        // DepthFX samples a sampler2DArray fed by the XR runtime. There is no
+        // session here, so stand in a 2-layer array texture — enough to prove
+        // the shader compiles and samples, which is the part that breaks.
+        const depthfx = new DepthFX();
+        const layers = new Uint8Array(4 * 4 * 2 * 4);
+        for (let i = 0; i < layers.length; i += 4) {
+          const v = 128 + ((i / 4) % 7) * 12;
+          layers[i] = v; layers[i + 1] = v; layers[i + 2] = v; layers[i + 3] = 255;
+        }
+        const depthTex = new DataArrayTexture(layers, 4, 4, 2);
+        depthTex.needsUpdate = true;
+        const du = depthfx.mesh.material.uniforms;
+        du.uDepth.value = depthTex;
+        du.uDepthWidth.value = 1280;
+        du.uDepthHeight.value = 720;
+        du.uNear.value = 0.1;
+        du.uFar.value = 100;
+        du.uTime.value = 1.25;
+        depthfx.mesh.visible = true;
+        stage.scene.add(depthfx.mesh);
+        log('depth fx: built (sampler2DArray path)');
+
+        reticle.update(hand, 1.25, false);
+        skeleton.update([hand]);
+        feed.update(1.25);
+        ambient.update(1.25, 2, true);
+        stage.renderer.render(stage.scene, stage.camera);
+        const drawCalls = stage.renderer.info.render.calls;
+        readback();
+
+        let maxL = 0;
+        for (let i = 0; i < 1280 * 720; i++) {
+          const l = (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2]) / 3;
+          if (l > maxL) maxL = l;
+        }
+
+        log('--- full scene ---\n' + asciiMap(19, 39));
+        log('webgl: ' + gl.getParameter(gl.VERSION));
+        log('programs: ' + stage.renderer.info.programs.length +
+            '   draw calls: ' + drawCalls + '   gl error: ' + gl.getError());
+
+        const drew = maxL > 60;
+        log(errors.length ? 'CONSOLE ERRORS:\n' + errors.join('\n') : 'no shader errors');
+        if (!drew) log('NOTHING RASTERIZED');
+        log((!errors.length && drew && circular) ? 'RESULT: PASS' : 'RESULT: FAIL');
+      } catch (e) {
+        log('THREW: ' + (e && e.stack || e));
+        log('RESULT: FAIL');
+      }
+    </script>
+  </body>
+</html>
