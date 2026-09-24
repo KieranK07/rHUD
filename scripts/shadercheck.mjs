@@ -24,6 +24,8 @@ const URLS = process.env.RHUD_URL
       'https://localhost:5173/dev/shadercheck.html',
     ];
 
+const TIMEOUT_MS = Number(process.env.RHUD_SHADERCHECK_TIMEOUT ?? 30000);
+
 function findChrome() {
   if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
 
@@ -71,16 +73,32 @@ function run(url) {
       { stdio: ['ignore', 'pipe', 'ignore'] },
     );
 
+    // Chrome.app often writes the DOM and then never exits, so stop reading
+    // as soon as the verdict is in, and kill it outright if it hangs.
     let dom = '';
-    child.stdout.on('data', (c) => (dom += c));
-    child.on('close', () => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      child.kill('SIGKILL');
       const match = /id="out"[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
       resolve(
         match
           ? match[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
           : null,
       );
+    };
+    const timer = setTimeout(() => {
+      console.error(`[shadercheck] Chrome gave no verdict in ${TIMEOUT_MS / 1000}s, killed it`);
+      finish();
+    }, TIMEOUT_MS);
+    child.stdout.on('data', (c) => {
+      dom += c;
+      if (/RESULT: (PASS|FAIL)[\s\S]*<\/pre>/.test(dom)) finish();
     });
+    child.on('close', finish);
+    child.on('error', finish);
   });
 }
 
